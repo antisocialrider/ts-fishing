@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fishing UI</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background-color: transparent;
+            font-family: 'Inter', sans-serif;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: flex-start;
+            height: 100vh;
+            width: 100vw;
+        }
+
+        #notification-container {
+            position: absolute;
+            top: 5%;
+            left: 50%;
+            transform: translateX(-50%);
+            display: none;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.5s ease-in-out;
+        }
+
+        #minigame-container {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            display: none;
+            z-index: 1001;
+            opacity: 0;
+            transition: opacity 0.3s ease-in-out;
+        }
+
+        .notification-fade-in {
+            animation: fadeIn 0.5s forwards;
+        }
+
+        .notification-fade-out {
+            animation: fadeOut 0.5s forwards;
+        }
+
+        @keyframes fadeIn {
+            from {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+
+            to {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+        }
+
+        @keyframes fadeOut {
+            from {
+                opacity: 1;
+                transform: translateX(-50%) translateY(0);
+            }
+
+            to {
+                opacity: 0;
+                transform: translateX(-50%) translateY(-20px);
+            }
+        }
+
+        .notification-success {
+            background-color: #22c55e;
+        }
+
+        .notification-info {
+            background-color: #3b82f6;
+        }
+
+        .notification-warning {
+            background-color: #f59e0b;
+        }
+
+        .notification-error {
+            background-color: #ef4444;
+        }
+
+    </style>
+</head>
+
+<body class="p-4">
+    <div id="notification-container" class="p-4 rounded-lg shadow-lg text-white text-center min-w-[250px]">
+        <p id="notification-message" class="text-lg font-semibold"></p>
+    </div>
+
+    <div id="minigame-container"
+        class="p-8 bg-gray-800 bg-opacity-90 rounded-lg shadow-2xl text-white text-center flex flex-col items-center justify-center">
+        <p class="text-2xl font-bold mb-4">Quick Time Event!</p>
+        <div class="w-24 h-24 bg-blue-600 rounded-full flex items-center justify-center shadow-inner">
+            <span id="minigame-key" class="text-5xl font-extrabold">E</span>
+        </div>
+        <p class="text-sm mt-4 text-gray-300">Press the key quickly!</p>
+    </div>
+
+    <script src="script.js"></script>
+</body>
+
+</html>
