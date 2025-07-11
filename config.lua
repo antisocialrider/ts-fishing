@@ -1,11 +1,12 @@
+-- antisocialrider/ts-fishing/ts-fishing-8e6e44eb75ffde795a94ac9edc08bfdb1ef85374/config.lua
 Config = Config or {}
 
-Config.Debugging = false
+Config.Debugging = true
 
 -- [[ Clamming Zones ]] --
 Config['clamming'] = {
     Zones = {
-        { 
+        {
             type = 'poly',
             points = {
                 vector2(-1406.37, -1577.14),
@@ -37,6 +38,16 @@ Config['deepsea'] = {
     BoatModel = "reefer",
     AnchoredThreshold = 0.2,
     BoatProximity = 15.0,
+    NetPropModel = `prop_alien_egg_01`, -- NEW: Model for the fishing net
+    RopeLength = 10.0, -- NEW: Length of the rope for the net
+    RopeAttachOffset = vector3(0.0, 0.0, 0.5), -- NEW: Offset for attaching rope to boat bone
+    NetMinigameSailDistance = 1000.0, -- NEW: Distance to sail with the net deployed
+    -- Removed NetMinigameKeyIntervalMin/Max as continuous minigame is removed
+    PotPropModel = `prop_alien_egg_01`, -- NEW: Model for the fishing pot (used by server/client)
+    BuoyPropModel = `prop_alien_egg_01`, -- NEW: Model for the buoy (used by server/client)
+    PotDeployOffset = vector3(0.0, -3.0, 0.0), -- Offset for where pot is deployed relative to boat
+    PotMaxCatches = 5, -- Maximum items a pot can catch
+    PotCatchGenerationTime = 300000, -- 5 minutes in milliseconds (how often server checks to add catches)
 }
 
 -- [[ Global Options ]] --

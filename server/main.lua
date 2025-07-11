@@ -219,11 +219,12 @@ AddEventHandler('onResourceStart', function(resourceName)
 end)
 
 
+-- MODIFIED: Useable items now trigger specific client events
 QBCore.Functions.CreateUseableItem('fishingrod', function(source, item)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if Player.Functions.GetItemByName(item.name) then
-        TriggerClientEvent('ts-fishing:client:startFishing', source)
+        TriggerClientEvent('ts-fishing:client:startTraditionalFishing', source) -- NEW event
     end
 end)
 
@@ -231,7 +232,7 @@ QBCore.Functions.CreateUseableItem('shovel', function(source, item)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if Player.Functions.GetItemByName(item.name) then
-        TriggerClientEvent('ts-fishing:client:startFishing', source)
+        TriggerClientEvent('ts-fishing:client:startClamming', source) -- NEW event
     end
 end)
 
@@ -241,7 +242,7 @@ QBCore.Functions.CreateUseableItem('fishingnet', function(source, item)
     local Player = QBCore.Functions.GetPlayer(src)
     if Player.Functions.GetItemByName(item.name) then
         DebugPrint('fishingnet used, triggering client event for deepsea net fishing.', src)
-        TriggerClientEvent('ts-fishing:client:startFishing', source, 'net')
+        TriggerClientEvent('ts-fishing:client:startDeepSeaFishing', source, 'net') -- NEW event
     end
 end)
 
@@ -251,7 +252,7 @@ QBCore.Functions.CreateUseableItem('fishingpot', function(source, item)
     local Player = QBCore.Functions.GetPlayer(src)
     if Player.Functions.GetItemByName(item.name) then
         DebugPrint('fishingpot used, triggering client event for deepsea pot fishing.', src)
-        TriggerClientEvent('ts-fishing:client:startFishing', source, 'pot')
+        TriggerClientEvent('ts-fishing:client:startDeepSeaFishing', source, 'pot') -- NEW event
     end
 end)
 
