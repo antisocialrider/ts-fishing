@@ -1,3 +1,4 @@
+-- antisocialrider/ts-fishing/ts-fishing-30c79791400a44ebf78a174946a71c48107efe47/client/main.lua
 local QBCore = exports['qb-core']:GetCoreObject()
 
 local createdZones = {}
@@ -5,6 +6,16 @@ local isFishing = false
 local fishingRodProp = nil
 local clammingShovelProp = nil
 local clammingDirtProp = nil
+
+-- NEW GLOBAL VARIABLES
+local netProp = nil
+local netRope = nil
+-- Pot props are now managed in clientActivePots table
+local potProp = nil -- Still keep for the initiating player's immediate reference, though handled by clientActivePots for others.
+local buoyProp = nil -- Still keep for the initiating player's immediate reference, though handled by clientActivePots for others.
+
+-- NEW: Table to store locally created pot and buoy objects
+local clientActivePots = {} -- { potId = { potObj = object, buoyObj = object } }
 
 -- Global variable to store the current zone type the player is in.
 -- This will still be updated by the zone checks, but traditional fishing won't strictly rely on it.
@@ -61,12 +72,20 @@ local function AddItem(itemName, amount)
     SendNotification("You caught a " .. itemName .. "!", "success")
 end
 
-local function StartMinigame(fishingType)
-    if fishingType == 'traditional' or fishingType == 'deepsea' then
+-- MODIFIED: StartMinigame, removed deepsea_nui_key type
+local function StartMinigame(fishingType, deepseaType)
+    if fishingType == 'traditional' then
         return exports.peuren_minigames:StartPressureBar(40, 20)
     elseif fishingType == 'clamming' then
-        return exports['SN-Hacking']:SkillBar({4000, 8000}, 10, 2) --SkillBar(duration(milliseconds or table{min(milliseconds), max(milliseconds)}), width%(number), rounds(number))
+        return exports['SN-Hacking']:SkillBar({4000, 8000}, 10, 2)
+    elseif fishingType == 'deepsea' then
+        if deepseaType == 'net' then
+            return exports['SN-Hacking']:SkillBar({4000, 8000}, 10, 2)
+        else
+            return exports['SN-Hacking']:SkillBar({4000, 8000}, 10, 2)
+        end
     end
+    return false
 end
 
 local function AdvancedWaterCheck()
@@ -120,13 +139,12 @@ local function AdvancedWaterCheck()
         end
     end
 
-    -- MODIFIED: Changed the last parameter (isNetwork) from 'true' to 'false'
     local probeObject = CreateObject(model, probeX, probeY, probeZ, false, false, false)
-    SetEntityVisible(probeObject, false, false) -- Keep this as false normally, turn to true for debugging
-    SetEntityHasGravity(probeObject, true) -- This should now apply correctly
+    SetEntityVisible(probeObject, false, false)
+    SetEntityHasGravity(probeObject, true)
     ActivatePhysics(probeObject)
 
-    local waitTimeForSettle = 7000 -- Keep this at 2000ms or increase if the probe falls from very high
+    local waitTimeForSettle = 7000
     DebugPrint("AdvancedWaterCheck: Waiting " .. waitTimeForSettle .. "ms for probe to settle.")
     Wait(waitTimeForSettle)
     local inWater = IsEntityInWater(probeObject)
@@ -142,7 +160,7 @@ end
 local function CheckRequiredItems(fishingType, config)
 
     if fishingType == 'deepsea' then
-        if config.NetItem and not HasItem(config.NetItem) or config.PotItem and not HasItem(config.PotItem) then
+        if config.NetItem and not HasItem(config.NetItem) and config.PotItem and not HasItem(config.PotItem) then
             DebugPrint('Required item check failed: Missing Net or Pot')
             return false, "You need a Net or Pot!"
         end
@@ -153,8 +171,6 @@ local function CheckRequiredItems(fishingType, config)
         end
     end
 
-    -- NetItem and PotItem are now checked when the usable item is activated on the server.
-    -- This client-side check is primarily for bait and other generic items.
     if config.BaitItem and not HasItem(config.BaitItem) then
         DebugPrint('Required item check failed: Missing ' .. config.BaitItem)
         return false, "You need " .. config.BaitItem .. "!"
@@ -221,10 +237,9 @@ local function CheckTraditionalLocation(PlayerPed)
         DebugPrint('Traditional fishing location check failed: Cannot fish while swimming.')
         return false, "You cannot traditionally fish while swimming!"
     end
-    local facingFishableWater, waterHitPos = AdvancedWaterCheck() -- Call your new function
+    local facingFishableWater, waterHitPos = AdvancedWaterCheck()
     SendNotification("Checking fishing spot...", "info")
 
----    local facingFishableWater, waterHitPos = WaterCheck()
     if not facingFishableWater then
         DebugPrint('Traditional fishing location check failed: Not facing fishable water (WaterCheck returned false).')
         return false, "You need to be facing fishable water to traditionally fish!"
@@ -259,6 +274,29 @@ local function StopFishing()
         clammingDirtProp = nil
         DebugPrint('Deleted dirt prop.')
     end
+    -- NEW: Cleanup for net and pot props/rope
+    if netProp and DoesEntityExist(netProp) then
+        DeleteObject(netProp)
+        netProp = nil
+        DebugPrint('Deleted net prop.')
+    end
+    if netRope and DoesRopeExist(netRope) then -- Check if rope exists
+        DeleteRope(netRope) -- Delete the rope
+        netRope = nil
+        DebugPrint('Deleted net rope.')
+    end
+    -- Note: potProp and buoyProp globals are primarily for the initiating player.
+    -- General cleanup for all clients is handled by ts-fishing:client:removePotProps event.
+    if potProp and DoesEntityExist(potProp) then -- This would only be set for the player who deployed the pot
+        DeleteObject(potProp)
+        potProp = nil
+        DebugPrint('Deleted local pot prop.')
+    end
+    if buoyProp and DoesEntityExist(buoyProp) then -- This would only be set for the player who deployed the pot
+        DeleteObject(buoyProp)
+        buoyProp = nil
+        DebugPrint('Deleted local buoy prop.')
+    end
 
     RemoveAnimDict('mini@tennis')
     RemoveAnimDict('amb@world_human_stand_fishing@idle_a')
@@ -270,7 +308,91 @@ local function StopFishing()
     DebugPrint('Fishing state reset.')
 end
 
--- MODIFIED: Added deepSeaMethod parameter
+-- Helper to calculate a position at the back of the boat
+local function GetRearOfBoatCoords(boatEntity, offset)
+    local coords = GetEntityCoords(boatEntity)
+    local heading = GetEntityHeading(boatEntity)
+    local rearX = coords.x - math.sin(math.rad(heading)) * offset.y
+    local rearY = coords.y + math.cos(math.rad(heading)) * offset.y
+    local rearZ = coords.z + offset.z -- Z offset is relative to boat's Z
+    return vector3(rearX, rearY, rearZ)
+end
+
+-- NEW FUNCTION: Check if player is near the back of the boat
+local function CheckPlayerNearBoatRear(PlayerPed, boatEntity, proximityThreshold)
+    local playerCoords = GetEntityCoords(PlayerPed)
+    local boatCoords = GetEntityCoords(boatEntity)
+    -- This is a simplistic 'rear' check, ideally would check a specific bone or more refined area
+    local rearOfBoat = GetRearOfBoatCoords(boatEntity, vector3(0.0, -3.0, 0.0)) -- 3m behind boat
+    local distance = GetDistanceBetweenCoords(playerCoords, rearOfBoat, true)
+    DebugPrint(string.format("Player distance to boat rear: %.2f (Threshold: %.2f)", distance, proximityThreshold))
+    return distance <= proximityThreshold, "You need to be near the back of the boat to deploy this!"
+end
+
+-- NEW THREAD: Net Fishing Minigame Logic (NO NUI)
+local function NetFishingMinigameThread(deepSeaBoatEntity, fishConfig)
+    local playerPed = PlayerPedId()
+    local config = Config['deepsea']
+    local distanceSailed = 0.0
+    local initialBoatCoords = GetEntityCoords(deepSeaBoatEntity)
+    local lastCheckCoords = initialBoatCoords
+    local successCount = 0
+    local promptInterval = math.random(config.NetMinigameKeyIntervalMin, config.NetMinigameKeyIntervalMax)
+    local lastPromptTime = GetGameTimer()
+
+    DebugPrint('NetFishingMinigameThread started.')
+
+    while isFishing and distanceSailed < config.NetMinigameSailDistance do
+        Wait(0) -- Yield to prevent freezing
+
+        if not DoesEntityExist(deepSeaBoatEntity) or GetVehiclePedIsIn(playerPed, false) ~= deepSeaBoatEntity then
+            SendNotification("You left the boat! Net fishing cancelled.", "error")
+            StopFishing()
+            break
+        end
+
+        local currentBoatCoords = GetEntityCoords(deepSeaBoatEntity)
+        local segmentDistance = GetDistanceBetweenCoords(lastCheckCoords, currentBoatCoords, true)
+        distanceSailed = distanceSailed + segmentDistance
+        lastCheckCoords = currentBoatCoords
+
+        DisplayHelpText(string.format("~b~Net Fishing: ~w~Sail ~y~%.1fm~w~/~g~%.1fm~w~. Successes: ~g~%d", distanceSailed, config.NetMinigameSailDistance, successCount))
+
+        if GetGameTimer() - lastPromptTime > promptInterval then
+            DebugPrint('Triggering net minigame prompt (using peuren_minigames).')
+            -- Use existing minigame export for the key prompt
+            if exports.peuren_minigames:StartPressureBar(40, 20) then -- Adjust parameters as needed
+                successCount = successCount + 1
+                SendNotification("Net lowered/raised successfully!", "success")
+            else
+                SendNotification("Failed to lower/raise net!", "error")
+            end
+            lastPromptTime = GetGameTimer()
+            promptInterval = math.random(config.NetMinigameKeyIntervalMin, config.NetMinigameKeyIntervalMax)
+        end
+    end
+
+    if isFishing then -- Only proceed if fishing wasn't cancelled
+        DebugPrint('Net fishing distance covered. Calculating catch...')
+        -- Simplified chance calculation, can be adjusted based on minigame successes logic
+        local totalPossiblePrompts = math.floor(config.NetMinigameSailDistance / (config.NetMinigameKeyIntervalMin / 1000)) -- Estimate
+        local effectiveCatchChance = (successCount / math.max(1, totalPossiblePrompts)) * fishConfig.CatchChance
+
+        if math.random() < effectiveCatchChance then
+            local caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
+            AddItem(caughtItem, 1)
+            DebugPrint('Successfully caught: ' .. caughtItem)
+        else
+            SendNotification("You sailed a lot but the net came up empty!", "info")
+            DebugPrint('Net fishing attempt: No catch.')
+        end
+    end
+
+    StopFishing() -- Stop fishing and clean up after the net minigame
+end
+
+
+-- MODIFIED: AttemptFishing to integrate net/pot logic
 local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
     isFishing = true
     DebugPrint('Attempting ' .. fishingType .. ' fishing' .. (deepSeaMethod and ' with method ' .. deepSeaMethod or '') .. '.')
@@ -279,6 +401,7 @@ local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
     local message = ""
     local passedChecks = true
     local deepSeaBoatEntity = nil
+    local playerCoords = GetEntityCoords(PlayerPed)
 
     -- The initial item checks for the specific fishing type.
     local itemsValid, itemMessage = CheckRequiredItems(fishingType, Config[fishingType])
@@ -296,6 +419,21 @@ local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
             else
                 deepSeaBoatEntity = foundDeepSeaBoat
                 DebugPrint('Deep sea fishing: Identified deep sea boat entity: ' .. tostring(deepSeaBoatEntity))
+
+                -- NEW: Specific checks for Net and Pot
+                if deepSeaMethod == 'net' then
+                    local nearRear, rearMessage = CheckPlayerNearBoatRear(PlayerPed, deepSeaBoatEntity, 10.0) -- 5m proximity
+                    if not nearRear then
+                        passedChecks = false
+                        message = rearMessage
+                    end
+                elseif deepSeaMethod == 'pot' then
+                    local nearRear, rearMessage = CheckPlayerNearBoatRear(PlayerPed, deepSeaBoatEntity, 10.0) -- 5m proximity
+                    if not nearRear then
+                        passedChecks = false
+                        message = rearMessage
+                    end
+                end
             end
         elseif fishingType == 'traditional' then
             -- Traditional fishing now relies on WaterCheck which is handled by CheckTraditionalLocation
@@ -323,26 +461,116 @@ local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
 
     -- ANIMATION & PROP SETUP
     if fishingType == 'traditional' or fishingType == 'deepsea' then
-        local model = `prop_fishing_rod_01`
-        local animDictTennis = 'mini@tennis'
-        local animDictFishing = 'amb@world_human_stand_fishing@idle_a'
+        if deepSeaMethod == 'net' then
+            -- Net deployment animation (placeholder)
+            local animDict = 'amb@world_human_stand_fishing@idle_a' -- Re-using existing anim dict
+            RequestAnimDict(animDict)
+            while not HasAnimDictLoaded(animDict) do Wait(0) end
+            TaskPlayAnim(PlayerPed, animDict, 'idle_c', 1.0, -1.0, -1, 11, 0, 0, 0, 0)
+            DebugPrint('Starting net deployment animation.')
 
-        RequestModel(model)
-        RequestAnimDict(animDictTennis)
-        RequestAnimDict(animDictFishing)
+            -- Create and attach net prop
+            RequestModel(config.NetPropModel)
+            while not HasModelLoaded(config.NetPropModel) do Wait(0) end
+            -- Create as network object
+            netProp = CreateObject(config.NetPropModel, playerCoords.x, playerCoords.y, playerCoords.z - 5.0, true, true, true)
+            SetEntityCoordsNoOffset(netProp, playerCoords.x, playerCoords.y, GetWaterHeight(playerCoords.x, playerCoords.y, playerCoords.z), false, false, false)
+            SetEntityCollision(netProp, false, false)
+            SetEntityHasGravity(netProp, true)
+            ActivatePhysics(netProp)
 
-        while not HasModelLoaded(model) or not HasAnimDictLoaded(animDictTennis) or not HasAnimDictLoaded(animDictFishing) do
-            Wait(0)
+            local boatRearBone = GetEntityBoneIndexByName(deepSeaBoatEntity, 'v_engine') -- Use a common boat rear bone
+            if boatRearBone == -1 then boatRearBone = 0 end -- Fallback to root bone if specific bone not found
+
+            netRope = AddRope(playerCoords.x, playerCoords.y, playerCoords.z, config.RopeLength, 0.5, 0.05, 0, 0, 0, 0, 0, "rope_tx", "rope_tx_01")
+            Wait(100) -- Allow rope to be created
+            if netRope then
+                 -- Attach the rope to the boat (rear) and the net prop
+                AttachEntitiesToRope(netRope, deepSeaBoatEntity, netProp, boatRearBone, 0, config.RopeAttachOffset.x, config.RopeAttachOffset.y, config.RopeAttachOffset.z, 0.0, 0.0, 0.0, true)
+                DebugPrint('Net prop created and attached to boat with rope.')
+                Citizen.CreateThread(function() NetFishingMinigameThread(deepSeaBoatEntity, fishConfig) end)
+            else
+                SendNotification("Failed to deploy net (rope error).", "error")
+                StopFishing()
+                return
+            end
+
+        elseif deepSeaMethod == 'pot' then
+            -- Pot deployment animation (placeholder)
+            local animDict = 'random@burial' -- Re-using existing anim dict
+            RequestAnimDict(animDict)
+            while not HasAnimDictLoaded(animDict) do Wait(0) end
+            TaskPlayAnim(PlayerPed, animDict, 'a_burial', 1.0, -1.0, -1, 48, 0, 0, 0, 0)
+            DebugPrint('Starting pot deployment animation.')
+
+            -- Start install minigame
+            local minigameResult = StartMinigame(fishingType, deepSeaMethod) -- Re-using SN-Hacking skill bar for "install"
+            if minigameResult then
+                SendNotification("Pot installed successfully!", "success")
+                -- Trigger server event to save pot location and start catch generation
+                -- Server will then broadcast to all clients (including this one) to create the props
+                TriggerServerEvent('ts-fishing:server:deployPot', GetRearOfBoatCoords(deepSeaBoatEntity, config.PotDeployOffset), GetEntityHeading(deepSeaBoatEntity), Config.deepsea.PotMaxCatches)
+            else
+                SendNotification("Pot installation failed!", "error")
+            end
+            StopFishing()
+
+        else -- Standard traditional/deepsea fishing with rod
+            local model = `prop_fishing_rod_01`
+            local animDictTennis = 'mini@tennis'
+            local animDictFishing = 'amb@world_human_stand_fishing@idle_a'
+
+            RequestModel(model)
+            RequestAnimDict(animDictTennis)
+            RequestAnimDict(animDictFishing)
+
+            while not HasModelLoaded(model) or not HasAnimDictLoaded(animDictTennis) or not HasAnimDictLoaded(animDictFishing) do
+                Wait(0)
+            end
+
+            fishingRodProp = CreateObject(model, GetEntityCoords(PlayerPed), true, false, false)
+            AttachEntityToEntity(fishingRodProp, PlayerPed, GetPedBoneIndex(PlayerPed, 18905), 0.1, 0.05, 0, 80.0, 120.0, 160.0, true, true, false, true, 1, true)
+            SetModelAsNoLongerNeeded(model)
+
+            TaskPlayAnim(PlayerPed, animDictTennis, 'forehand_ts_md_far', 1.0, -1.0, 1000, 48, 0, 0, 0, 0)
+            Wait(1000)
+            TaskPlayAnim(PlayerPed, animDictFishing, 'idle_c', 1.0, -1.0, -1, 11, 0, 0, 0, 0)
+            DebugPrint('Starting fishing rod animation for ' .. fishingType .. '.')
+
+            local wasCancelled = false
+            local startTime = GetGameTimer()
+            local endTime = startTime + config.Time
+
+            while GetGameTimer() < endTime do
+                Wait(0)
+                DisplayHelpText("~INPUT_CELLPHONE_CANCEL~ or ~INPUT_CREATOR_LT~ Cancel Fishing")
+                if IsControlJustPressed(0, 177) or IsControlJustPressed(0, 252) then -- 'X' key
+                    wasCancelled = true
+                    SendNotification("Fishing cancelled!", "info")
+                    DebugPrint('Fishing cancelled by player.')
+                    break
+                end
+            end
+
+            if wasCancelled then
+                StopFishing()
+                return
+            end
+
+            DebugPrint(fishingType .. ' fishing attempt duration finished. Starting minigame.')
+
+            if StartMinigame(fishingType) then
+                if math.random() < fishConfig.CatchChance then
+                    local caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
+                    AddItem(caughtItem, 1)
+                    DebugPrint('Successfully caught: ' .. caughtItem)
+                else
+                    SendNotification("You didn't catch anything this time.", "info")
+                    DebugPrint('Fishing attempt: No catch.')
+                end
+            end
+            StopFishing()
         end
-
-        fishingRodProp = CreateObject(model, GetEntityCoords(PlayerPed), true, false, false)
-        AttachEntityToEntity(fishingRodProp, PlayerPed, GetPedBoneIndex(PlayerPed, 18905), 0.1, 0.05, 0, 80.0, 120.0, 160.0, true, true, false, true, 1, true)
-        SetModelAsNoLongerNeeded(model)
-
-        TaskPlayAnim(PlayerPed, animDictTennis, 'forehand_ts_md_far', 1.0, -1.0, 1000, 48, 0, 0, 0, 0)
-        Wait(1000)
-        TaskPlayAnim(PlayerPed, animDictFishing, 'idle_c', 1.0, -1.0, -1, 11, 0, 0, 0, 0)
-        DebugPrint('Starting fishing rod animation for ' .. fishingType .. '.')
 
     elseif fishingType == 'clamming' then
         local shovelModel = `prop_tool_shovel`
@@ -367,65 +595,41 @@ local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
 
         TaskPlayAnim(PlayerPed, animDictBurial, 'a_burial', 1.0, -1.0, -1, 48, 0, 0, 0, 0)
         DebugPrint('Starting shovel digging animation for clamming.')
-    end
 
-    local wasCancelled = false
-    local startTime = GetGameTimer()
-    local endTime = startTime + config.Time
+        local wasCancelled = false
+        local startTime = GetGameTimer()
+        local endTime = startTime + config.Time
 
-    while GetGameTimer() < endTime do
-        Wait(0)
-        DisplayHelpText("~INPUT_CELLPHONE_CANCEL~ or ~INPUT_CREATOR_LT~ Cancel Fishing")
-        if IsControlJustPressed(0, 177) or IsControlJustPressed(0, 252) then -- 'X' key
-            wasCancelled = true
-            SendNotification("Fishing cancelled!", "info")
-            DebugPrint('Fishing cancelled by player.')
-            break
-        end
-    end
-
-    -- Call the centralized StopFishing function for cleanup
-    if wasCancelled then
-        StopFishing()
-        return
-    end
-
-    DebugPrint(fishingType .. ' fishing attempt duration finished. Starting minigame.')
-
-    if StartMinigame(fishingType) then
-        if math.random() < fishConfig.CatchChance then
-            local caughtItem = nil
-            if fishingType == 'deepsea' then
-                if deepSeaMethod == 'net' then
-                    caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
-                    DebugPrint('Deep sea net fishing: Caught ' .. tostring(caughtItem))
-                elseif deepSeaMethod == 'pot' then
-                    caughtItem = fishConfig.Crustacean[math.random(1, #fishConfig.Crustacean)]
-                    DebugPrint('Deep sea pot fishing: Caught ' .. tostring(caughtItem))
-                else
-                    DebugPrint('ERROR: Unknown deepSeaMethod for deepsea fishing: ' .. tostring(deepSeaMethod))
-                    SendNotification("An error occurred during deep sea fishing.", "error")
-                end
-            else
-                caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
-                DebugPrint('Successfully caught: ' .. caughtItem)
+        while GetGameTimer() < endTime do
+            Wait(0)
+            DisplayHelpText("~INPUT_CELLPHONE_CANCEL~ or ~INPUT_CREATOR_LT~ Cancel Fishing")
+            if IsControlJustPressed(0, 177) or IsControlJustPressed(0, 252) then -- 'X' key
+                wasCancelled = true
+                SendNotification("Fishing cancelled!", "info")
+                DebugPrint('Fishing cancelled by player.')
+                break
             end
+        end
 
-            if caughtItem then
+        if wasCancelled then
+            StopFishing()
+            return
+        end
+
+        DebugPrint(fishingType .. ' fishing attempt duration finished. Starting minigame.')
+
+        if StartMinigame(fishingType) then
+            if math.random() < fishConfig.CatchChance then
+                local caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
                 AddItem(caughtItem, 1)
-                DebugPrint('Successfully added: ' .. caughtItem)
+                DebugPrint('Successfully caught: ' .. caughtItem)
             else
                 SendNotification("You didn't catch anything this time.", "info")
-                DebugPrint('Fishing attempt: No catch or invalid deepSeaMethod.')
+                DebugPrint('Fishing attempt: No catch.')
             end
-        else
-            SendNotification("You didn't catch anything this time.", "info")
-            DebugPrint('Fishing attempt: No catch.')
         end
+        StopFishing()
     end
-
-    -- Call the centralized StopFishing function for cleanup after minigame/catch
-    StopFishing()
 end
 
 -- Function to create PolyZone objects from the config
@@ -433,17 +637,16 @@ local function CreateFishingZones()
     DebugPrint('Attempting to create fishing zones...')
 
     for fishingTypeKey, data in pairs(Config) do
-        -- Ensure we only process valid fishing type configurations that have a 'Zones' table
         if type(data) == 'table' and data.Zones and Config.FishTypes[fishingTypeKey] then
             DebugPrint('Processing config for fishing type: ' .. fishingTypeKey)
             local subZonesForCombo = {}
             for i, individualZoneData in ipairs(data.Zones) do
                 local subZone = nil
                 local options = {
-                    debugPoly = Config.Debugging, -- Use global debug setting
+                    debugPoly = Config.Debugging,
                     minZ = individualZoneData.minZ,
                     maxZ = individualZoneData.maxZ,
-                    name = fishingTypeKey .. "_" .. individualZoneData.type .. "_" .. i -- Unique name for sub-zone
+                    name = fishingTypeKey .. "_" .. individualZoneData.type .. "_" .. i
                 }
 
                 if individualZoneData.type == 'circle' then
@@ -455,7 +658,6 @@ local function CreateFishingZones()
                     end
                 elseif individualZoneData.type == 'box' then
                     if BoxZone then
-                        -- CORRECTED: Pass heading inside the options table for BoxZone
                         options.heading = individualZoneData.heading
                         subZone = BoxZone:Create(individualZoneData.coords, individualZoneData.length, individualZoneData.width, options)
                         DebugPrint('Created BoxZone for ' .. fishingTypeKey .. ' at ' .. tostring(individualZoneData.coords) .. ' (Length: ' .. individualZoneData.length .. ', Width: ' .. individualZoneData.width .. ', Heading: ' .. tostring(individualZoneData.heading) .. ')')
@@ -463,7 +665,7 @@ local function CreateFishingZones()
                         DebugPrint('Skipped BoxZone creation: Global BoxZone is NIL.')
                     end
                 elseif individualZoneData.type == 'poly' then
-                    if PolyZone then -- Assuming PolyZone is the global constructor for polygon zones
+                    if PolyZone then
                         subZone = PolyZone:Create(individualZoneData.points, options)
                         DebugPrint('Created PolyZone (polygon) for ' .. fishingTypeKey .. ' with ' .. #individualZoneData.points .. ' points.')
                     else
@@ -485,11 +687,10 @@ local function CreateFishingZones()
                     debugPoly = Config.Debugging,
                     name = fishingTypeKey .. "_Combo",
                 })
-                -- Store the combo zone and its associated fishing type
                 createdZones[fishingTypeKey] = {
                     zone = mainComboZone,
                     fishingType = fishingTypeKey,
-                    isPlayerInside = false -- Initialize player inside flag for this combo zone
+                    isPlayerInside = false
                 }
                 DebugPrint('Successfully created ComboZone for ' .. fishingTypeKey .. ' with ' .. #subZonesForCombo .. ' sub-zones. DebugPoly set to: ' .. tostring(Config.Debugging))
             else
@@ -513,56 +714,53 @@ end)
 
 AddEventHandler('QBCore:Client:OnPlayerLoaded', function()
     CreateFishingZones()
+    -- Request active pots from server upon player load/spawn
+    TriggerServerEvent('ts-fishing:server:syncPots')
 end)
 
 CreateThread(function()
     while true do
         local PlayerPed = PlayerPedId()
         local PlayerCoords = GetEntityCoords(PlayerPed)
-        local sleepTime = 500 -- Default sleep time
+        local sleepTime = 500
 
-        local inAnyFishingZoneThisTick = false -- Track if player is in *any* zone during this tick
-        local activeFishingTypeThisTick = nil -- Track the fishing type for the zone currently entered
+        local inAnyFishingZoneThisTick = false
+        local activeFishingTypeThisTick = nil
 
         for fishingTypeKey, zoneEntry in pairs(createdZones) do
             local zone = zoneEntry.zone
 
             if zone and zone:isPointInside(PlayerCoords) then
                 inAnyFishingZoneThisTick = true
-                activeFishingTypeThisTick = fishingTypeKey -- Set the active type
+                activeFishingTypeThisTick = fishingTypeKey
 
                 if not zoneEntry.isPlayerInside then
                     DebugPrint('Player HAS ENTERED ' .. fishingTypeKey .. ' zone.')
                     zoneEntry.isPlayerInside = true
-                    -- Display info notification only on entry
                     SendNotification(
                         string.format("Entered %s zone.", string.gsub(fishingTypeKey, "^%l", string.upper)),
                         "info"
                     )
                 end
-                sleepTime = 5 -- Reduce sleep time for active zone checks
-                break -- Break after finding the first zone the player is in
+                sleepTime = 5
+                break
             else
                 if zoneEntry.isPlayerInside then
                     DebugPrint('Player HAS LEFT ' .. fishingTypeKey .. ' zone.')
                     zoneEntry.isPlayerInside = false
-                    -- If player leaves a zone while fishing, cancel it
                     if isFishing then
                         SendNotification("You left the fishing zone! Fishing cancelled.", "error")
-                        StopFishing() -- Call the centralized stop function
+                        StopFishing()
                     end
                 end
             end
         end
 
-        -- Update global currentZoneType based on this tick's findings
         currentZoneType = activeFishingTypeThisTick
 
         if not inAnyFishingZoneThisTick then
             sleepTime = 500
         end
-
-        -- No 'E' key input handling here anymore, as fishing is triggered by event.
 
         Wait(sleepTime)
     end
@@ -580,10 +778,9 @@ RegisterNetEvent('ts-fishing:client:startFishing', function(deepSeaMethod)
     end
 
     local determinedFishingType = nil
-    local errorReason = "You are not in a valid fishing spot or lack the necessary items." -- Default error
-    local finalDeepSeaMethod = deepSeaMethod -- Store the method passed from server
+    local errorReason = "You are not in a valid fishing spot or lack the necessary items."
+    local finalDeepSeaMethod = deepSeaMethod
 
-    -- Attempt to determine fishing type based on context
     if currentZoneType == 'clamming' then
         DebugPrint('Player is in a clamming zone. Checking clamming conditions...')
         local itemsValid, itemMessage = CheckRequiredItems('clamming', Config['clamming'])
@@ -595,13 +792,12 @@ RegisterNetEvent('ts-fishing:client:startFishing', function(deepSeaMethod)
     else
         if finalDeepSeaMethod then
             DebugPrint('Player is in a deepsea zone. Checking deepsea conditions...')
-            if finalDeepSeaMethod == 'net' or finalDeepSeaMethod == 'pot' then -- Check if a valid deep-sea method was passed
+            if finalDeepSeaMethod == 'net' or finalDeepSeaMethod == 'pot' then
                 local itemsValid, itemMessage = CheckRequiredItems('deepsea', Config['deepsea'])
                 if itemsValid then
                     local boatValid, boatMessage, _ = CheckDeepSeaBoat(Config.deepsea, playerPed)
                     if boatValid then
                         determinedFishingType = 'deepsea'
-                        -- The specific method (net/pot) is already in finalDeepSeaMethod
                     else
                         errorReason = boatMessage
                     end
@@ -613,7 +809,6 @@ RegisterNetEvent('ts-fishing:client:startFishing', function(deepSeaMethod)
                 DebugPrint('Deep sea fishing attempt blocked: Invalid or missing deepSeaMethod.')
             end
         else
-            -- If not in a specific zone, check for traditional fishing (anywhere with water + rod)
             DebugPrint('Player not in a specific fishing zone. Checking for traditional fishing conditions...')
             local itemsValid, itemMessage = CheckRequiredItems('traditional', Config['traditional'])
             if itemsValid then
@@ -631,12 +826,79 @@ RegisterNetEvent('ts-fishing:client:startFishing', function(deepSeaMethod)
 
     if determinedFishingType then
         DebugPrint('Initiating fishing for type: ' .. determinedFishingType .. (finalDeepSeaMethod and ' (Method: ' .. finalDeepSeaMethod .. ')' or ''))
-        AttemptFishing(determinedFishingType, playerPed, finalDeepSeaMethod) -- Pass finalDeepSeaMethod
+        AttemptFishing(determinedFishingType, playerPed, finalDeepSeaMethod)
     else
         SendNotification(errorReason, "error")
         DebugPrint('Fishing attempt blocked: ' .. errorReason)
     end
 end)
+
+-- NEW Client Event: Creates pot props from server data
+RegisterNetEvent('ts-fishing:client:createPotProps', function(potsData)
+    -- potsData can be a single pot or a table of pots (for initial sync)
+    local dataToProcess = {}
+    if type(potsData) == 'table' and potsData.id then -- single pot object structure
+        table.insert(dataToProcess, potsData)
+    elseif type(potsData) == 'table' then -- table of pot objects for initial sync
+        dataToProcess = potsData
+    end
+
+    for _, potInfo in ipairs(dataToProcess) do
+        if not clientActivePots[potInfo.id] then -- Only create if not already existing locally
+            DebugPrint('Client received request to create pot props for ID: ' .. potInfo.id)
+
+            -- Request models
+            RequestModel(potInfo.potModel)
+            RequestModel(potInfo.buoyModel)
+            while not HasModelLoaded(potInfo.potModel) or not HasModelLoaded(potInfo.buoyModel) do Wait(0) end
+
+            local waterZ = GetWaterHeight(potInfo.coords.x, potInfo.coords.y, potInfo.coords.z)
+            local potCoords = vector3(potInfo.coords.x, potInfo.coords.y, waterZ - 1.0) -- Spawn slightly below water
+            local buoyCoords = vector3(potInfo.coords.x, potInfo.coords.y, waterZ + 0.5) -- Buoy slightly above water
+
+            local createdPot = CreateObject(potInfo.potModel, potCoords.x, potCoords.y, potCoords.z, true, true, true)
+            SetEntityAsMissionEntity(createdPot, true, true)
+            SetEntityCollision(createdPot, true, true)
+            SetEntityHasGravity(createdPot, true)
+            ActivatePhysics(createdPot)
+            PlaceObjectOnGroundProperly(createdPot)
+            SetEntityHeading(createdPot, potInfo.heading)
+
+            local createdBuoy = CreateObject(potInfo.buoyModel, buoyCoords.x, buoyCoords.y, buoyCoords.z, true, true, true)
+            SetEntityAsMissionEntity(createdBuoy, true, true)
+            SetEntityCollision(createdBuoy, true, true)
+            SetEntityHasGravity(createdBuoy, false) -- Buoys typically float
+            PlaceObjectOnGroundProperly(createdBuoy)
+            SetEntityHeading(createdBuoy, potInfo.heading)
+
+            clientActivePots[potInfo.id] = {
+                potObj = createdPot,
+                buoyObj = createdBuoy
+            }
+            DebugPrint('Created client-side pot ' .. potInfo.id .. ' at ' .. tostring(potCoords))
+        else
+            DebugPrint('Pot ' .. potInfo.id .. ' already exists client-side.')
+        end
+    end
+end)
+
+-- NEW Client Event: Removes pot props by ID
+RegisterNetEvent('ts-fishing:client:removePotProps', function(potId)
+    if clientActivePots[potId] then
+        DebugPrint('Client received request to remove pot props for ID: ' .. potId)
+        if DoesEntityExist(clientActivePots[potId].potObj) then
+            DeleteObject(clientActivePots[potId].potObj)
+        end
+        if DoesEntityExist(clientActivePots[potId].buoyObj) then
+            DeleteObject(clientActivePots[potId].buoyObj)
+        end
+        clientActivePots[potId] = nil
+        DebugPrint('Removed client-side pot ' .. potId)
+    else
+        DebugPrint('Client received request to remove non-existent pot: ' .. potId)
+    end
+end)
+
 
 -- Anchoring
 local isBoatAnchored = false

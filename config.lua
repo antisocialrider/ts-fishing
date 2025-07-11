@@ -19,7 +19,6 @@ Config['clamming'] = {
     },
     RodItem = "shovel",
     Time = 10000,
-    MinigameDifficulty = 0.6
 }
 
 -- [[ Traditional Fishing Zones ]] --
@@ -27,7 +26,6 @@ Config['traditional'] = {
     RodItem = "fishingrod",
     BaitItem = "fishbait",
     Time = 15000,
-    MinigameDifficulty = 0.5,
 }
 
 -- [[ Deep Sea Fishing Zones ]] --
