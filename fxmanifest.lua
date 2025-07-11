@@ -14,13 +14,10 @@ client_scripts {
     '@PolyZone/EntityZone.lua',
     '@PolyZone/CircleZone.lua',
     '@PolyZone/ComboZone.lua',
-    'client/framework.lua',
-    'client/functions.lua',
     'client/main.lua'
 }
 
 server_scripts {
-    'server/framework.lua',
     'server/main.lua'
 }
 
@@ -40,5 +37,7 @@ data_file 'CARCOLS_FILE' 'data/**/carcols.meta'
 data_file 'VEHICLE_VARIATION_FILE' 'data/**/carvariations.meta'
 
 dependencies {
-    'PolyZone'
+    'PolyZone',
+    'peuren_minigames',
+    'SN-Hacking'
 }
