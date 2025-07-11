@@ -1,6 +1,7 @@
 -- antisocialrider/ts-fishing/ts-fishing-30c79791400a44ebf78a174946a71c48107efe47/client/main.lua
 local QBCore = exports['qb-core']:GetCoreObject()
 
+-- Initial local variable declarations
 local createdZones = {}
 local isFishing = false -- General flag, true when *any* fishing animation/minigame is active
 local fishingRodProp = nil
@@ -8,9 +9,9 @@ local clammingShovelProp = nil
 local clammingDirtProp = nil
 
 -- NEW GLOBAL VARIABLES for Deep Sea Net Fishing
-local isNetDeployed = false -- True when net prop and rope are active and player needs to sail
+local isNetDeployed = false -- True when net prop is active and player needs to sail
 local netDeployedHandle = nil -- Object handle for the deployed net
-local netRopeHandle = nil -- Rope handle
+-- Removed: local netRopeHandle = nil -- Rope handle
 local netBoatEntity = nil -- Reference to the boat entity used for net deployment
 local netStartCoords = nil -- Coordinates where the net was initially deployed
 local isNetReadyForCollection = false -- True when net has sailed enough and is ready to be collected
@@ -25,6 +26,27 @@ local clientActivePots = {} -- { potId = { potObj = object, buoyObj = object } }
 
 -- Global variable to store the current zone type the player is in.
 local currentZoneType = nil
+
+-- Anchoring variables
+local isBoatAnchored = false
+local anchorThread = nil
+
+-- NEW: Explicit Global State Reset on Script Load
+-- This ensures that all critical flags and entity references are cleared
+-- every time the resource starts or refreshes, preventing lingering states.
+isFishing = false
+isNetDeployed = false
+netDeployedHandle = nil
+-- netRopeHandle = nil -- Removed from reset as variable itself is removed
+netBoatEntity = nil
+netStartCoords = nil
+isNetReadyForCollection = false
+netCollectionZone = nil
+potProp = nil
+buoyProp = nil
+clientActivePots = {}
+isBoatAnchored = false
+anchorThread = nil
 
 local function DebugPrint(msg)
     if Config.Debugging then
@@ -275,13 +297,24 @@ local function StopNetFishing()
         netDeployedHandle = nil
         DebugPrint('Deleted net prop.')
     end
-    if netRopeHandle and DoesRopeExist(netRopeHandle) then
-        DeleteRope(netRopeHandle)
-        netRopeHandle = nil
-        DebugPrint('Deleted net rope.')
+    -- Removed: if netRopeHandle and DoesRopeExist(netRopeHandle) then
+    -- Removed:     DeleteRope(netRopeHandle)
+    -- Removed:     netRopeHandle = nil
+    -- Removed:     DebugPrint('Deleted net rope.')
+    -- Removed: end
+
+    -- NEW: Explicitly reset boat physics/control if it was the net fishing boat
+    if netBoatEntity and DoesEntityExist(netBoatEntity) then
+        -- Clear any residual forces or velocity applications
+        -- This might help break any lingering physics overrides
+        SetEntityVelocity(netBoatEntity, 0.0, 0.0, 0.0)
+        -- Reset any potentially locked controls
+        SetVehicleEngineOn(netBoatEntity, true, true, false) -- Ensure engine is on and can be driven
+        SetVehicleUndriveable(netBoatEntity, false) -- Ensure it's marked as driveable
+        DebugPrint('Resetting netBoatEntity physics and controls.')
     end
 
-    netBoatEntity = nil
+    netBoatEntity = nil -- Clear reference AFTER attempting reset
     netStartCoords = nil
     isNetDeployed = false
     isNetReadyForCollection = false
@@ -366,25 +399,22 @@ local function StopFishing()
     DebugPrint('Master fishing state reset.')
 end
 
-
--- Helper to calculate a position at the back of the boat
 local function GetRearOfBoatCoords(boatEntity, offset)
     local coords = GetEntityCoords(boatEntity)
     local heading = GetEntityHeading(boatEntity)
     local rearX = coords.x - math.sin(math.rad(heading)) * offset.y
     local rearY = coords.y + math.cos(math.rad(heading)) * offset.y
-    local rearZ = coords.z + offset.z -- Z offset is relative to boat's Z
+    local rearZ = coords.z + offset.z
     return vector3(rearX, rearY, rearZ)
 end
 
 -- NEW FUNCTION: Check if player is near the back of the boat
 local function CheckPlayerNearBoatRear(PlayerPed, boatEntity, proximityThreshold)
     local playerCoords = GetEntityCoords(PlayerPed)
-    local boatCoords = GetEntityCoords(boatEntity)
-    -- This is a simplistic 'rear' check, ideally would check a specific bone or more refined area
-    local rearOfBoat = GetRearOfBoatCoords(boatEntity, vector3(0.0, -3.0, 0.0)) -- 3m behind boat (adjusted from original for a better point)
-    local distance = GetDistanceBetweenCoords(playerCoords, rearOfBoat, true)
-    DebugPrint(string.format("Player distance to boat rear: %.2f (Threshold: %.2f)", distance, proximityThreshold))
+    -- Using GetOffsetFromEntityInWorldCoords for more accurate rear-of-boat detection
+    local rearOfBoatWorldCoords = GetOffsetFromEntityInWorldCoords(boatEntity, 0.0, -3.0, -0.5)
+    local distance = GetDistanceBetweenCoords(playerCoords, rearOfBoatWorldCoords, true)
+    DebugPrint(string.format("Player distance to boat rear: %.2f (Threshold: %.2f) (Target Coords: %s)", distance, proximityThreshold, tostring(rearOfBoatWorldCoords)))
     return distance <= proximityThreshold, "You need to be near the back of the boat to deploy this!"
 end
 
@@ -446,7 +476,8 @@ local function CreateNetCollectionZone()
         return
     end
 
-    local rearOfBoatCoords = GetRearOfBoatCoords(currentBoat, config.PotDeployOffset) -- Reuse PotDeployOffset for collection spot
+    -- Use GetOffsetFromEntityInWorldCoords for the collection zone origin
+    local rearOfBoatCoords = GetOffsetFromEntityInWorldCoords(currentBoat, 0.0, config.PotDeployOffset.y, config.PotDeployOffset.z)
 
     if BoxZone then
         netCollectionZone = BoxZone:Create(
@@ -552,7 +583,7 @@ local function StartTraditionalFishingProcess(PlayerPed)
 
     if not passedChecks then
         SendNotification(message, "error")
-        isFishing = false -- Reset general fishing state if checks fail before starting
+        isFishing = false
         return
     end
 
@@ -777,24 +808,18 @@ local function StartDeepSeaFishingProcess(PlayerPed, deepSeaMethod)
         SetEntityHasGravity(netDeployedHandle, true)
         ActivatePhysics(netDeployedHandle)
 
-        -- Simplied rope attachment, explicitly using root bone (0)
-        netRopeHandle = AddRope(playerCoords.x, playerCoords.y, playerCoords.z, config.RopeLength, 0.5, 0.05, 0, 0, 0, 0, 0, "rope_tx", "rope_tx_01")
-        Wait(100) -- Allow rope to be created
-        if netRopeHandle then
-            -- Attach to the root bone (0) of both entities
-            AttachEntitiesToRope(netRopeHandle, deepSeaBoatEntity, netDeployedHandle, 0, 0, config.RopeAttachOffset.x, config.RopeAttachOffset.y, config.RopeAttachOffset.z, 0.0, 0.0, 0.0, true)
-            DebugPrint('Net prop created and attached to boat with rope (using root bones).')
-            ClearPedTasks(PlayerPed)
-            SendNotification("Net deployed! Start sailing your boat to drag the net.", "info")
-            isNetDeployed = true
-            netBoatEntity = deepSeaBoatEntity
-            netStartCoords = GetEntityCoords(deepSeaBoatEntity)
-            isFishing = false -- Player is now free to drive, not in a static fishing state
-        else
-            SendNotification("Failed to deploy net (rope error).", "error")
-            StopNetFishing()
-            return
-        end
+        -- Removed: Rope creation and attachment logic
+        -- Removed: netRopeHandle = AddRope(netX, netY, netZ, config.RopeLength, ...)
+        -- Removed: AttachEntitiesToRope(netRopeHandle, deepSeaBoatEntity, netDeployedHandle, ...)
+
+        DebugPrint('Net prop created and deployed. Rope attachment skipped as per user request.')
+        ClearPedTasks(PlayerPed)
+        SendNotification("Net deployed! Start sailing your boat to drag the net.", "info")
+        isNetDeployed = true
+        netBoatEntity = deepSeaBoatEntity
+        netStartCoords = GetEntityCoords(deepSeaBoatEntity)
+        isFishing = false -- Player is now free to drive, not in a static fishing state
+        -- Removed: Else block for failed rope creation
 
     elseif deepSeaMethod == 'pot' then
         local animDict = 'random@burial'
@@ -1032,6 +1057,21 @@ RegisterNetEvent('ts-fishing:client:createPotProps', function(potsData)
             DebugPrint('Created client-side pot ' .. potInfo.id .. ' at ' .. tostring(potCoords))
         else
             DebugPrint('Pot ' .. potInfo.id .. ' already exists client-side.')
+            -- (Optional): Add a small margin to the distance check for better usability
+            -- local isInRange = GetDistanceBetweenCoords(playerCoords, potInfo.coords, true) < 2.0 -- Arbitrary range for collection
+            -- if isInRange then
+            --     DisplayHelpText("Press ~INPUT_CONTEXT~ to collect fishing pot")
+            --     -- Start a thread to listen for 'E' key press
+            --     Citizen.CreateThread(function()
+            --         while isInRange do -- Needs to check isInRange dynamically inside the loop
+            --             Wait(0)
+            --             if IsControlJustReleased(0, 38) then -- INPUT_CONTEXT (E key)
+            --                 TriggerServerEvent('ts-fishing:server:collectPot', potInfo.id)
+            --                 break
+            --             end
+            --         end
+            --     end)
+            -- end
         end
     end
 end)
