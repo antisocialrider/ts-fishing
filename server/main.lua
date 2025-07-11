@@ -1,3 +1,4 @@
+-- server/main.lua
 local QBCore = exports['qb-core']:GetCoreObject()
 
 local function DebugPrint(msg, source)
@@ -17,11 +18,32 @@ QBCore.Functions.CreateUseableItem('fishingrod', function(source, item)
         TriggerClientEvent('ts-fishing:client:startFishing', source)
     end
 end)
+
 QBCore.Functions.CreateUseableItem('shovel', function(source, item)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
     if Player.Functions.GetItemByName(item.name) then
         TriggerClientEvent('ts-fishing:client:startFishing', source)
+    end
+end)
+
+-- NEW: Usable item for fishing net
+QBCore.Functions.CreateUseableItem('fishingnet', function(source, item)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if Player.Functions.GetItemByName(item.name) then
+        DebugPrint('fishingnet used, triggering client event for deepsea net fishing.', src)
+        TriggerClientEvent('ts-fishing:client:startFishing', source, 'net')
+    end
+end)
+
+-- NEW: Usable item for fishing pot
+QBCore.Functions.CreateUseableItem('fishingpot', function(source, item)
+    local src = source
+    local Player = QBCore.Functions.GetPlayer(src)
+    if Player.Functions.GetItemByName(item.name) then
+        DebugPrint('fishingpot used, triggering client event for deepsea pot fishing.', src)
+        TriggerClientEvent('ts-fishing:client:startFishing', source, 'pot')
     end
 end)
 

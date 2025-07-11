@@ -139,11 +139,22 @@ local function AdvancedWaterCheck()
     return inWater, actualProbeCoords
 end
 
-local function CheckRequiredItems(config)
-    if config.RodItem and not HasItem(config.RodItem) then
-        DebugPrint('Required item check failed: Missing ' .. config.RodItem)
-        return false, "You need a " .. config.RodItem .. "!"
+local function CheckRequiredItems(fishingType, config)
+
+    if fishingType == 'deepsea' then
+        if config.NetItem and not HasItem(config.NetItem) or config.PotItem and not HasItem(config.PotItem) then
+            DebugPrint('Required item check failed: Missing Net or Pot')
+            return false, "You need a Net or Pot!"
+        end
+    else
+        if config.RodItem and not HasItem(config.RodItem) then
+            DebugPrint('Required item check failed: Missing ' .. config.RodItem)
+            return false, "You need a " .. config.RodItem .. "!"
+        end
     end
+
+    -- NetItem and PotItem are now checked when the usable item is activated on the server.
+    -- This client-side check is primarily for bait and other generic items.
     if config.BaitItem and not HasItem(config.BaitItem) then
         DebugPrint('Required item check failed: Missing ' .. config.BaitItem)
         return false, "You need " .. config.BaitItem .. "!"
@@ -259,17 +270,18 @@ local function StopFishing()
     DebugPrint('Fishing state reset.')
 end
 
-local function AttemptFishing(fishingType, PlayerPed)
+-- MODIFIED: Added deepSeaMethod parameter
+local function AttemptFishing(fishingType, PlayerPed, deepSeaMethod)
     isFishing = true
-    DebugPrint('Attempting ' .. fishingType .. ' fishing.')
+    DebugPrint('Attempting ' .. fishingType .. ' fishing' .. (deepSeaMethod and ' with method ' .. deepSeaMethod or '') .. '.')
     local config = Config[fishingType]
     local fishConfig = Config.FishTypes[fishingType]
     local message = ""
     local passedChecks = true
-    local deepSeaBoatEntity = nil 
+    local deepSeaBoatEntity = nil
 
     -- The initial item checks for the specific fishing type.
-    local itemsValid, itemMessage = CheckRequiredItems(config)
+    local itemsValid, itemMessage = CheckRequiredItems(fishingType, Config[fishingType])
     if not itemsValid then
         passedChecks = false
         message = itemMessage
@@ -282,7 +294,7 @@ local function AttemptFishing(fishingType, PlayerPed)
                 passedChecks = false
                 message = boatMessage
             else
-                deepSeaBoatEntity = foundDeepSeaBoat 
+                deepSeaBoatEntity = foundDeepSeaBoat
                 DebugPrint('Deep sea fishing: Identified deep sea boat entity: ' .. tostring(deepSeaBoatEntity))
             end
         elseif fishingType == 'traditional' then
@@ -382,9 +394,30 @@ local function AttemptFishing(fishingType, PlayerPed)
 
     if StartMinigame(fishingType) then
         if math.random() < fishConfig.CatchChance then
-            local caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
-            AddItem(caughtItem, 1)
-            DebugPrint('Successfully caught: ' .. caughtItem)
+            local caughtItem = nil
+            if fishingType == 'deepsea' then
+                if deepSeaMethod == 'net' then
+                    caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
+                    DebugPrint('Deep sea net fishing: Caught ' .. tostring(caughtItem))
+                elseif deepSeaMethod == 'pot' then
+                    caughtItem = fishConfig.Crustacean[math.random(1, #fishConfig.Crustacean)]
+                    DebugPrint('Deep sea pot fishing: Caught ' .. tostring(caughtItem))
+                else
+                    DebugPrint('ERROR: Unknown deepSeaMethod for deepsea fishing: ' .. tostring(deepSeaMethod))
+                    SendNotification("An error occurred during deep sea fishing.", "error")
+                end
+            else
+                caughtItem = fishConfig.Fish[math.random(1, #fishConfig.Fish)]
+                DebugPrint('Successfully caught: ' .. caughtItem)
+            end
+
+            if caughtItem then
+                AddItem(caughtItem, 1)
+                DebugPrint('Successfully added: ' .. caughtItem)
+            else
+                SendNotification("You didn't catch anything this time.", "info")
+                DebugPrint('Fishing attempt: No catch or invalid deepSeaMethod.')
+            end
         else
             SendNotification("You didn't catch anything this time.", "info")
             DebugPrint('Fishing attempt: No catch.')
@@ -535,10 +568,10 @@ CreateThread(function()
     end
 end)
 
--- MODIFIED ts-fishing:client:startFishing EVENT HANDLER
-RegisterNetEvent('ts-fishing:client:startFishing', function()
+-- MODIFIED ts-fishing:client:startFishing EVENT HANDLER to accept deepSeaMethod
+RegisterNetEvent('ts-fishing:client:startFishing', function(deepSeaMethod)
     local playerPed = PlayerPedId()
-    DebugPrint('Received ts-fishing:client:startFishing event.')
+    DebugPrint('Received ts-fishing:client:startFishing event with deepSeaMethod: ' .. tostring(deepSeaMethod))
 
     if isFishing then
         SendNotification("You are already fishing!", "error")
@@ -548,55 +581,57 @@ RegisterNetEvent('ts-fishing:client:startFishing', function()
 
     local determinedFishingType = nil
     local errorReason = "You are not in a valid fishing spot or lack the necessary items." -- Default error
+    local finalDeepSeaMethod = deepSeaMethod -- Store the method passed from server
 
     -- Attempt to determine fishing type based on context
-    if currentZoneType == 'deepsea' then
-        DebugPrint('Player is in a deepsea zone. Checking deepsea conditions...')
-        local itemsValid, itemMessage = CheckRequiredItems(Config.deepsea)
-        if itemsValid then
-            local boatValid, boatMessage, _ = CheckDeepSeaBoat(Config.deepsea, playerPed)
-            if boatValid then
-                determinedFishingType = 'deepsea'
-            else
-                errorReason = boatMessage
-            end
-        else
-            errorReason = itemMessage
-        end
-    elseif currentZoneType == 'clamming' then
+    if currentZoneType == 'clamming' then
         DebugPrint('Player is in a clamming zone. Checking clamming conditions...')
-        local itemsValid, itemMessage = CheckRequiredItems(Config.clamming)
+        local itemsValid, itemMessage = CheckRequiredItems('clamming', Config['clamming'])
         if itemsValid then
             determinedFishingType = 'clamming'
         else
             errorReason = itemMessage
         end
     else
-        -- If not in a specific zone, check for traditional fishing (anywhere with water + rod)
-        DebugPrint('Player not in a specific fishing zone. Checking for traditional fishing conditions...')
-        local rodItem = Config.traditional.RodItem
-        if HasItem(rodItem) then
-            local locationValid, locationMessage = CheckTraditionalLocation(playerPed)
-            if locationValid then
-                local baitItem = Config.traditional.BaitItem
-                if baitItem and not HasItem(baitItem) then -- Check for bait specifically for traditional if configured
-                    errorReason = "You need " .. baitItem .. " for traditional fishing!"
-                    DebugPrint('Traditional fishing item check failed: Missing bait.')
+        if finalDeepSeaMethod then
+            DebugPrint('Player is in a deepsea zone. Checking deepsea conditions...')
+            if finalDeepSeaMethod == 'net' or finalDeepSeaMethod == 'pot' then -- Check if a valid deep-sea method was passed
+                local itemsValid, itemMessage = CheckRequiredItems('deepsea', Config['deepsea'])
+                if itemsValid then
+                    local boatValid, boatMessage, _ = CheckDeepSeaBoat(Config.deepsea, playerPed)
+                    if boatValid then
+                        determinedFishingType = 'deepsea'
+                        -- The specific method (net/pot) is already in finalDeepSeaMethod
+                    else
+                        errorReason = boatMessage
+                    end
                 else
-                    determinedFishingType = 'traditional'
+                    errorReason = itemMessage
                 end
             else
-                errorReason = locationMessage
+                errorReason = "You must use either a fishing net or a fishing pot for deep sea fishing!"
+                DebugPrint('Deep sea fishing attempt blocked: Invalid or missing deepSeaMethod.')
             end
         else
-            errorReason = "You need a " .. rodItem .. " to fish!"
-            DebugPrint('Traditional fishing item check failed: Missing rod.')
+            -- If not in a specific zone, check for traditional fishing (anywhere with water + rod)
+            DebugPrint('Player not in a specific fishing zone. Checking for traditional fishing conditions...')
+            local itemsValid, itemMessage = CheckRequiredItems('traditional', Config['traditional'])
+            if itemsValid then
+                local locationValid, locationMessage = CheckTraditionalLocation(playerPed)
+                if locationValid then
+                    determinedFishingType = 'traditional'
+                else
+                    errorReason = locationMessage
+                end
+            else
+                errorReason = itemMessage
+            end
         end
     end
 
     if determinedFishingType then
-        DebugPrint('Initiating fishing for type: ' .. determinedFishingType)
-        AttemptFishing(determinedFishingType, playerPed)
+        DebugPrint('Initiating fishing for type: ' .. determinedFishingType .. (finalDeepSeaMethod and ' (Method: ' .. finalDeepSeaMethod .. ')' or ''))
+        AttemptFishing(determinedFishingType, playerPed, finalDeepSeaMethod) -- Pass finalDeepSeaMethod
     else
         SendNotification(errorReason, "error")
         DebugPrint('Fishing attempt blocked: ' .. errorReason)
