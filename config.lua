@@ -37,11 +37,11 @@ Config['deepsea'] = {
     Time = 20000,
     BoatModel = "reefer",
     AnchoredThreshold = 0.2,
-    BoatProximity = 20.0,
+    BoatProximity = 50.0,
     NetPropModel = `prop_alien_egg_01`, -- NEW: Model for the fishing net
     RopeLength = 10.0, -- NEW: Length of the rope for the net
     RopeAttachOffset = vector3(0.0, -3.0, 0.5), -- NEW: Offset for attaching rope to boat bone
-    NetMinigameSailDistance = 1000.0, -- NEW: Distance to sail with the net deployed
+    NetMinigameSailDistance = 500.0, -- NEW: Distance to sail with the net deployed
     -- Removed NetMinigameKeyIntervalMin/Max as continuous minigame is removed
     PotPropModel = `prop_alien_egg_01`, -- NEW: Model for the fishing pot (used by server/client)
     BuoyPropModel = `prop_alien_egg_01`, -- NEW: Model for the buoy (used by server/client)
@@ -73,7 +73,6 @@ Config.FishTypes = {
         }
     },
     ['deepsea'] = {
-        CatchChance = 0.7, -- Global chance of catching something (0.0 to 1.0)
         Fish = {
             'tuna',-- Bluefin Tuna
             'marlin',-- Blue Marlin
@@ -85,6 +84,8 @@ Config.FishTypes = {
             'crab',
             'shrimp',
             'lobster',
-        }
+        },
+        MinCatchAmount = 5, -- NEW: Minimum items caught from net collection
+        MaxCatchAmount = 20, -- NEW: Maximum items caught from net collection
     },
 }

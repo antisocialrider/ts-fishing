@@ -1,9 +1,8 @@
--- antisocialrider/ts-fishing/ts-fishing-30c79791400a44ebf78a174946a71c48107efe47/server/main.lua
 local QBCore = exports['qb-core']:GetCoreObject()
-
--- NEW GLOBAL TABLE FOR ACTIVE POTS
--- Stores server-side data for active fishing pots. Props are created client-side.
-local activeFishingPots = {} -- { potId = { coords = vector3, heading = float, deployedTime = number, caughtItems = {}, maxCatches = number }, ... }
+local activeFishingPots = {}
+local playerNetBoats = {}
+local activeAnchoredBoats = {}
+local activeNetProps = {}
 
 local function DebugPrint(msg, source)
     if Config.Debugging then
@@ -15,7 +14,6 @@ local function DebugPrint(msg, source)
     end
 end
 
--- NEW: Helper to save a single pot to the database using oxmysql
 local function SavePotToDatabase(potId)
     local potData = activeFishingPots[potId]
     if potData then
@@ -38,7 +36,6 @@ local function SavePotToDatabase(potId)
     end
 end
 
--- NEW: Helper to delete a pot from the database using oxmysql
 local function DeletePotFromDatabase(potId)
     MySQL.Async.execute("DELETE FROM fishing_pots WHERE id = ?", { potId }, function(rowsAffected)
         if rowsAffected > 0 then
@@ -49,27 +46,23 @@ local function DeletePotFromDatabase(potId)
     end)
 end
 
--- NEW: Event to deploy a fishing pot (client to server)
 RegisterNetEvent('ts-fishing:server:deployPot', function(coords, heading, maxCatches)
     local src = source
-    local potId = QBCore.Shared.Functions.RandomStr(10) -- Generate a unique ID for the pot
-    local deployedTime = os.time() -- Use Unix timestamp for persistence
+    local potId = QBCore.Shared.Functions.RandomStr(10)
+    local deployedTime = os.time()
 
     DebugPrint(string.format('Player %s deploying pot at %s (Heading: %.2f, Max Catches: %d)', src, tostring(coords), heading, maxCatches))
 
-    -- Store pot data server-side
     activeFishingPots[potId] = {
         coords = coords,
         heading = heading,
         deployedTime = deployedTime,
-        caughtItems = {}, -- Initially empty
+        caughtItems = {},
         maxCatches = maxCatches,
-        -- No potNetId/buoyNetId here, as props are client-created
     }
 
-    SavePotToDatabase(potId) -- Save to DB immediately
+    SavePotToDatabase(potId)
 
-    -- Trigger client event for ALL players to create the props
     TriggerClientEvent('ts-fishing:client:createPotProps', -1, {
         id = potId,
         coords = coords,
@@ -80,7 +73,6 @@ RegisterNetEvent('ts-fishing:server:deployPot', function(coords, heading, maxCat
     DebugPrint('Pot ' .. potId .. ' data deployed and saved, broadcasted to clients for prop creation.')
 end)
 
--- NEW: Event to collect a fishing pot (client to server)
 RegisterNetEvent('ts-fishing:server:collectPot', function(potId)
     local src = source
     local Player = QBCore.Functions.GetPlayer(src)
@@ -94,7 +86,6 @@ RegisterNetEvent('ts-fishing:server:collectPot', function(potId)
 
     DebugPrint('Player ' .. src .. ' collecting pot ' .. potId)
 
-    -- Give caught items to player
     local itemsGiven = 0
     for itemName, count in pairs(potData.caughtItems) do
         Player.Functions.AddItem(itemName, count)
@@ -106,16 +97,14 @@ RegisterNetEvent('ts-fishing:server:collectPot', function(potId)
         TriggerClientEvent('ts-fishing:client:sendNotification', src, "The pot was empty!", "info")
     end
 
-    -- Trigger client event for ALL players to remove the props
     TriggerClientEvent('ts-fishing:client:removePotProps', -1, potId)
 
-    DeletePotFromDatabase(potId) -- Delete from DB
-    activeFishingPots[potId] = nil -- Remove from active table
+    DeletePotFromDatabase(potId)
+    activeFishingPots[potId] = nil
 
     DebugPrint('Pot ' .. potId .. ' collected and removed from server data.')
 end)
 
--- NEW Event: Sends current active pot data to a connecting client
 RegisterNetEvent('ts-fishing:server:syncPots', function()
     local src = source
     local potsToSend = {}
@@ -133,17 +122,68 @@ RegisterNetEvent('ts-fishing:server:syncPots', function()
 end)
 
 
--- NEW THREAD: Pot Catch Generation
+RegisterNetEvent('ts-fishing:server:setPlayersNetBoat', function(netBoatNetworkId)
+    local src = source
+    playerNetBoats[src] = netBoatNetworkId
+    DebugPrint(string.format('Server: Player %s\'s net boat set to Network ID: %s', src, tostring(netBoatNetworkId)), src)
+end)
+
+RegisterNetEvent('ts-fishing:server:clearPlayersNetBoat', function()
+    local src = source
+    playerNetBoats[src] = nil
+    DebugPrint(string.format('Server: Player %s\'s net boat record cleared.', src), src)
+    if activeNetProps[src] then
+        TriggerClientEvent('ts-fishing:client:removeNetPropVisual', -1, activeNetProps[src].netId)
+        activeNetProps[src] = nil
+        DebugPrint(string.format('Server: Removed net prop visual for player %s.', src), src)
+    end
+end)
+
+RegisterNetEvent('ts-fishing:server:addNetProp', function(netId, netBoatNetworkId, netPropModel, attachmentOffsetX, attachmentOffsetY, attachmentOffsetZ)
+    local src = source
+    activeNetProps[src] = {
+        netId = netId,
+        netBoatNetworkId = netBoatNetworkId,
+        netPropModel = netPropModel,
+        attachmentOffsetX = attachmentOffsetX,
+        attachmentOffsetY = attachmentOffsetY,
+        attachmentOffsetZ = attachmentOffsetZ
+    }
+    TriggerClientEvent('ts-fishing:client:createNetPropVisual', -1, netId, netBoatNetworkId, netPropModel, attachmentOffsetX, attachmentOffsetY, attachmentOffsetZ)
+    DebugPrint(string.format('Server: Player %s deployed net %s, broadcasting visual.', src, netId), src)
+end)
+
+RegisterNetEvent('ts-fishing:server:removeNetProp', function(netId)
+    local src = source
+    if activeNetProps[src] and activeNetProps[src].netId == netId then
+        TriggerClientEvent('ts-fishing:client:removeNetPropVisual', -1, netId)
+        activeNetProps[src] = nil
+        DebugPrint(string.format('Server: Player %s removed net %s, broadcasting visual removal.', src, netId), src)
+    end
+end)
+
+RegisterNetEvent('ts-fishing:server:setBoatAnchorStatus', function(vehicleNetworkId, isAnchoredStatus)
+    local src = source
+    if isAnchoredStatus then
+        activeAnchoredBoats[vehicleNetworkId] = true
+        DebugPrint(string.format('Server: Vehicle NetID %s anchored by player %s.', tostring(vehicleNetworkId), src), src)
+    else
+        activeAnchoredBoats[vehicleNetworkId] = nil
+        DebugPrint(string.format('Server: Vehicle NetID %s unanchored by player %s.', tostring(vehicleNetworkId), src), src)
+    end
+    TriggerClientEvent('ts-fishing:client:syncAnchorStatus', -1, vehicleNetworkId, isAnchoredStatus)
+end)
+
 CreateThread(function()
     while true do
-        Wait(Config.deepsea.PotCatchGenerationTime) -- Wait for configured interval in milliseconds
+        Wait(Config.deepsea.PotCatchGenerationTime)
 
         for potId, potData in pairs(activeFishingPots) do
-            local elapsedSinceDeploy = os.time() - potData.deployedTime -- elapsed time in seconds
-            local intervalSeconds = Config.deepsea.PotCatchGenerationTime / 1000 -- interval in seconds
+            local elapsedSinceDeploy = os.time() - potData.deployedTime
+            local intervalSeconds = Config.deepsea.PotCatchGenerationTime / 1000
             local expectedCatches = math.floor(elapsedSinceDeploy / intervalSeconds)
 
-            if potData.caughtItems == nil then potData.caughtItems = {} end -- Ensure table exists
+            if potData.caughtItems == nil then potData.caughtItems = {} end
 
             local currentTotalCatches = 0
             for _, count in pairs(potData.caughtItems) do
@@ -155,29 +195,20 @@ CreateThread(function()
 
                 if numToGenerate > 0 then
                     for i = 1, numToGenerate do
-                        local caughtItem = nil
-                        local chance = math.random()
-                        if chance < Config.FishTypes.deepsea.CatchChance then
-                            if math.random() < 0.5 then -- 50% chance for fish or crustacean
-                                caughtItem = Config.FishTypes.deepsea.Fish[math.random(1, #Config.FishTypes.deepsea.Fish)]
-                            else
-                                caughtItem = Config.FishTypes.deepsea.Crustacean[math.random(1, #Config.FishTypes.deepsea.Crustacean)]
-                            end
-                        end
-
+                        local caughtItem = Config.FishTypes.deepsea.Crustacean[math.random(1, #Config.FishTypes.deepsea.Crustacean)]
                         if caughtItem then
                             potData.caughtItems[caughtItem] = (potData.caughtItems[caughtItem] or 0) + 1
                             DebugPrint(string.format('Pot %s generated 1x %s. Total in pot: %d', potId, caughtItem, currentTotalCatches + i))
                         end
                     end
-                    SavePotToDatabase(potId) -- Save updated catches
+                    SavePotToDatabase(potId)
                 end
             end
         end
     end
 end)
 
--- MODIFIED: onResourceStart to load existing pots from DB using oxmysql
+-- MODIFIED: onResourceStart to load existing pots from DB using oxmysql and sync other states
 AddEventHandler('onResourceStart', function(resourceName)
     if GetCurrentResourceName() == resourceName then
         MySQL.Sync.execute([[
@@ -216,6 +247,35 @@ AddEventHandler('onResourceStart', function(resourceName)
             DebugPrint('No existing pots found in database.')
         end
     end
+end)
+
+-- NEW: Sync existing anchored boats and deployed nets to a new player
+AddEventHandler('playerJoining', function()
+    local src = source
+    -- Sync existing anchored boats
+    for netId, _ in pairs(activeAnchoredBoats) do
+        TriggerClientEvent('ts-fishing:client:syncAnchorStatus', src, netId, true)
+    end
+    -- Sync existing deployed nets
+    for playerSource, netData in pairs(activeNetProps) do
+        TriggerClientEvent('ts-fishing:client:createNetPropVisual', src, netData.netId, netData.netBoatNetworkId, netData.netPropModel, netData.attachmentOffsetX, netData.attachmentOffsetY, netData.attachmentOffsetZ)
+    end
+end)
+
+-- NEW: Clean up player-specific data on player dropping
+AddEventHandler('playerDropped', function()
+    local src = source
+    -- Clear player's net boat record
+    playerNetBoats[src] = nil
+    -- Remove any net prop associated with this player
+    if activeNetProps[src] then
+        TriggerClientEvent('ts-fishing:client:removeNetPropVisual', -1, activeNetProps[src].netId)
+        activeNetProps[src] = nil
+    end
+    -- If the player was in an anchored boat, that boat's anchor status might need review/reset
+    -- This is more complex and might require a custom solution depending on how you want
+    -- abandoned anchored boats to behave (e.g., stay anchored forever, or unanchor after timeout)
+    -- For now, we assume the anchor thread on other clients will eventually detect the vehicle is invalid.
 end)
 
 
@@ -262,5 +322,18 @@ RegisterNetEvent('ts-fishing:server:ItemControl', function(itemName, amount, giv
         Player.Functions.AddItem(itemName, amount)
     else
         Player.Functions.RemoveItem(itemName, amount)
+    end
+end)
+
+RegisterServerEvent('baseevents:enteredVehicle', function(veh, seat, modelName)
+    local src = source
+    DebugPrint(string.format('Server: Player %s entered vehicle %s (Model: %s) in seat %s.', src, tostring(veh), modelName, tostring(seat)), src)
+
+    local playersNetBoatNetworkId = playerNetBoats[src] -- Get stored Network ID
+
+    -- MODIFIED: Compare the Network ID of the entered vehicle with the stored Network ID
+    if playersNetBoatNetworkId and NetworkGetEntityFromNetworkId(playersNetBoatNetworkId) then
+        DebugPrint(string.format('Server: Player %s entered their active net fishing boat (Network ID: %s). Triggering client event.', src, tostring(playersNetBoatNetworkId)), src)
+        TriggerClientEvent('ts-fishing:client:playerEnteredNetBoat', src) -- Trigger client event
     end
 end)
